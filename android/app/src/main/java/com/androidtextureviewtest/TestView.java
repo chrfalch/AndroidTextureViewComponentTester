@@ -2,17 +2,16 @@ package com.androidtextureviewtest;
 
 import static android.opengl.EGL14.EGL_DEFAULT_DISPLAY;
 import static javax.microedition.khronos.egl.EGL10.EGL_NO_CONTEXT;
-import static javax.microedition.khronos.egl.EGL10.EGL_SUCCESS;
+import static javax.microedition.khronos.egl.EGL10.EGL_NO_DISPLAY;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.SurfaceTexture;
 import android.opengl.GLES20;
 import android.opengl.GLUtils;
 import android.util.Log;
 import android.view.TextureView;
-import android.view.View;
-import android.widget.Button;
 import android.widget.LinearLayout;
 
 import com.facebook.react.views.view.ReactViewGroup;
@@ -24,16 +23,35 @@ import javax.microedition.khronos.egl.EGLDisplay;
 import javax.microedition.khronos.egl.EGLSurface;
 
 public class TestView extends ReactViewGroup implements TextureView.SurfaceTextureListener {
-    class RenderThread extends Thread {
+    class RenderThread {
         private static final int EGL_CONTEXT_CLIENT_VERSION = 0x3098;
         private static final int EGL_OPENGL_ES2_BIT = 4;
+
+        private EGLDisplay display = EGL_NO_DISPLAY;
+        private EGLConfig config = null;
+        private EGLContext context = EGL_NO_CONTEXT;
+        private EGLSurface surface = null;
 
         boolean isStopped = false;
 
         SurfaceTexture mSurface;
 
-        RenderThread(SurfaceTexture surface) {
-            mSurface = surface;
+        RenderThread(SurfaceTexture s) {
+            mSurface = s;
+
+            EGL10 egl = (EGL10) EGLContext.getEGL();
+            display = egl.eglGetDisplay(EGL_DEFAULT_DISPLAY);
+
+            int[] version = new int[2];
+            egl.eglInitialize(display, version);   // getting OpenGL ES 2
+            config = chooseEglConfig(egl, display);
+
+            int[] attrib_list = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL10.EGL_NONE };
+            context = egl.eglCreateContext(display, config,
+                    EGL_NO_CONTEXT, attrib_list);
+
+            surface = egl.eglCreateWindowSurface(display, config, mSurface, null);
+            egl.eglMakeCurrent(display, surface, surface, context);
         }
 
         private int[] getConfig() {
@@ -49,39 +67,24 @@ public class TestView extends ReactViewGroup implements TextureView.SurfaceTextu
             };
         }
 
-        @Override
-        public void run() {
-            super.run();
-
+        public void drawFrame(float color) {
             EGL10 egl = (EGL10) EGLContext.getEGL();
-            EGLDisplay eglDisplay = egl.eglGetDisplay(EGL_DEFAULT_DISPLAY);
+            GLES20.glClearColor(color / 2, color, color, 1.0f);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            egl.eglSwapBuffers(display, surface);
+        }
 
-            int[] version = new int[2];
-            egl.eglInitialize(eglDisplay, version);   // getting OpenGL ES 2
-            EGLConfig eglConfig = chooseEglConfig(egl, eglDisplay);
+        public void run() {
+            EGL10 egl = (EGL10) EGLContext.getEGL();
 
-            int[] attrib_list = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL10.EGL_NONE };
-            EGLContext eglContext = egl.eglCreateContext(eglDisplay, eglConfig,
-                    EGL_NO_CONTEXT, attrib_list);
-
-            EGLSurface eglSurface = egl.eglCreateWindowSurface(eglDisplay, eglConfig, mSurface, null);
-
+           egl.eglMakeCurrent(display, surface, surface, context);
             float colorVelocity = 0.01f;
             float color = 0.5f;
 
-            egl.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
-
-            while (!isStopped && egl.eglGetError() == EGL_SUCCESS) {
-
+            while (!isStopped) {
                 if (color > 1 || color < 0) colorVelocity *= -1;
                 color += colorVelocity;
-
-                GLES20.glClearColor(color / 2, color, color, 1.0f);
-                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-                egl.eglSwapBuffers(eglDisplay, eglSurface);
-
-                Log.i("SkiaBaseView", "Render using renderer thread.");
-
+                drawFrame(color);
                 try {
                     Thread.sleep((int) (1f / 60f * 1000f)); // in real life this sleep is more complicated
                 } catch (InterruptedException e) {
@@ -90,8 +93,8 @@ public class TestView extends ReactViewGroup implements TextureView.SurfaceTextu
             }
 
             mSurface.release();
-            egl.eglDestroyContext(eglDisplay, eglContext);
-            egl.eglDestroySurface(eglDisplay, eglSurface);
+            egl.eglDestroyContext(display, context);
+            egl.eglDestroySurface(display, surface);
         }
 
         private EGLConfig chooseEglConfig(EGL10 egl, EGLDisplay eglDisplay) {
@@ -113,7 +116,6 @@ public class TestView extends ReactViewGroup implements TextureView.SurfaceTextu
 
     private RenderThread renderer;
 
-
     public TestView(Context context) {
         super(context);
 
@@ -122,19 +124,15 @@ public class TestView extends ReactViewGroup implements TextureView.SurfaceTextu
 
         mTextureView.setSurfaceTextureListener(this);
         mTextureView.setOpaque(false);
-    }
-
-    @Override
-    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-        super.onLayout(changed, left, top, right, bottom);
-        mTextureView.layout(0, 0, getMeasuredWidth(), getMeasuredHeight());
+        setBackgroundColor(Color.GREEN);
     }
 
     @Override
     public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
         Log.i("SkiaBaseView", "onSurfaceTextAvailable - rendering OpenGL");
+        mTextureView.layout(0, 0, getMeasuredWidth(), getMeasuredHeight());
         renderer = new RenderThread(surface);
-        renderer.start();
+        renderer.drawFrame(0.5f);
         Log.i("SkiaBaseView", "onSurfaceTextAvailable - done.");
     }
 
